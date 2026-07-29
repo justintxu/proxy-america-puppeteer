@@ -4,13 +4,13 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuración de la señal en vivo de Mediastream para América TV
-const MEDIASTREAM_ID = '6013233842323708233b8a8b'; // ID de la señal en vivo de America TV
+// ID de transmisión en vivo de América TV en Mediastream
+const MEDIASTREAM_ID = '6013233842323708233b8a8b';
 
 app.get('/americatv.m3u8', async (req, res) => {
   try {
-    // 1. Pedir a la API de Mediastream los datos de reproduccion frescos
-    const apiUrl = `https://platform.mediastream.com/api/player?id=${MEDIASTREAM_ID}`;
+    // 1. Pedir el player config a la API oficial de Mediastream (mdstrm.com)
+    const apiUrl = `https://platform.mdstrm.com/api/player?id=${MEDIASTREAM_ID}`;
     const apiRes = await axios.get(apiUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -19,20 +19,23 @@ app.get('/americatv.m3u8', async (req, res) => {
       }
     });
 
-    // Extracting the live stream URL from Mediastream response
     const srcList = apiRes.data?.data?.src;
     let liveUrl = null;
 
     if (Array.isArray(srcList)) {
-      const hlsObj = srcList.find(s => s.type === 'application/x-mpegURL' || s.type === 'application/vnd.apple.mpegurl' || s.src?.includes('.m3u8'));
+      const hlsObj = srcList.find(s => 
+        s.type === 'application/x-mpegURL' || 
+        s.type === 'application/vnd.apple.mpegurl' || 
+        (s.src && s.src.includes('.m3u8'))
+      );
       if (hlsObj) liveUrl = hlsObj.src;
     }
 
     if (!liveUrl) {
-      throw new Error('No se encontro la URL del stream en la respuesta de la API');
+      throw new Error('No se encontro la fuente m3u8 en la respuesta de Mediastream');
     }
 
-    // 2. Obtener el manifiesto m3u8 real usando las cabeceras requeridas
+    // 2. Obtener el manifiesto m3u8 real pasándole las cabeceras requeridas
     const response = await axios.get(liveUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -47,7 +50,7 @@ app.get('/americatv.m3u8', async (req, res) => {
     const host = req.headers.host;
     const protocol = req.headers['x-forwarded-proto'] || 'http';
 
-    // 3. Reescribir segmentos para dirigirlos al proxy
+    // 3. Reescribir fragmentos/segmentos para pasarlos por el proxy
     manifest = manifest.split('\n').map(line => {
       line = line.trim();
       if (!line || line.startsWith('#')) return line;
