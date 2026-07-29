@@ -1,82 +1,38 @@
 const express = require('express');
 const axios = require('axios');
-const puppeteer = require('puppeteer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-let cachedStreamUrl = null;
-let lastFetchTime = 0;
-const CACHE_DURATION = 15 * 60 * 1000;
-
-async function getFreshStreamUrl() {
-  const now = Date.now();
-  if (cachedStreamUrl && (now - lastFetchTime < CACHE_DURATION)) {
-    console.log('Usando URL de stream guardada en cache...');
-    return cachedStreamUrl;
-  }
-
-  console.log('Iniciando Puppeteer para extraer token fresco...');
-  
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ]
-  });
-
-  const page = await browser.newPage();
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-
-  let streamUrl = null;
-
-  page.on('request', request => {
-    const url = request.url();
-    if (url.includes('mdstrm.com/live-stream-secure') && url.includes('.m3u8')) {
-      if (!streamUrl) {
-        streamUrl = url;
-        console.log('URL de stream capturada con exito');
-      }
-    }
-  });
-
-  try {
-    await page.goto('https://tvgo.americatv.com.pe/', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
-
-    let attempts = 0;
-    while (!streamUrl && attempts < 10) {
-      await new Promise(r => setTimeout(r, 1000));
-      attempts++;
-    }
-  } catch (err) {
-    console.error('Error navegacion:', err.message);
-  } finally {
-    await browser.close();
-  }
-
-  if (streamUrl) {
-    cachedStreamUrl = streamUrl;
-    lastFetchTime = now;
-    return streamUrl;
-  } else {
-    throw new Error('No se pudo interceptar la URL del stream.');
-  }
-}
+// Configuración de la señal en vivo de Mediastream para América TV
+const MEDIASTREAM_ID = '6013233842323708233b8a8b'; // ID de la señal en vivo de America TV
 
 app.get('/americatv.m3u8', async (req, res) => {
   try {
-    const liveUrl = await getFreshStreamUrl();
-    
+    // 1. Pedir a la API de Mediastream los datos de reproduccion frescos
+    const apiUrl = `https://platform.mediastream.com/api/player?id=${MEDIASTREAM_ID}`;
+    const apiRes = await axios.get(apiUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://tvgo.americatv.com.pe/',
+        'Origin': 'https://tvgo.americatv.com.pe'
+      }
+    });
+
+    // Extracting the live stream URL from Mediastream response
+    const srcList = apiRes.data?.data?.src;
+    let liveUrl = null;
+
+    if (Array.isArray(srcList)) {
+      const hlsObj = srcList.find(s => s.type === 'application/x-mpegURL' || s.type === 'application/vnd.apple.mpegurl' || s.src?.includes('.m3u8'));
+      if (hlsObj) liveUrl = hlsObj.src;
+    }
+
+    if (!liveUrl) {
+      throw new Error('No se encontro la URL del stream en la respuesta de la API');
+    }
+
+    // 2. Obtener el manifiesto m3u8 real usando las cabeceras requeridas
     const response = await axios.get(liveUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -91,6 +47,7 @@ app.get('/americatv.m3u8', async (req, res) => {
     const host = req.headers.host;
     const protocol = req.headers['x-forwarded-proto'] || 'http';
 
+    // 3. Reescribir segmentos para dirigirlos al proxy
     manifest = manifest.split('\n').map(line => {
       line = line.trim();
       if (!line || line.startsWith('#')) return line;
@@ -105,12 +62,14 @@ app.get('/americatv.m3u8', async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(manifest);
+
   } catch (error) {
-    console.error('Error manifiesto:', error.message);
-    res.status(500).send('Error obteniendo la senal de America TV');
+    console.error('Error al obtener la senal:', error.message);
+    res.status(500).send('Error obteniendo la senal de America TV: ' + error.message);
   }
 });
 
+// Ruta intermediaria para procesar los fragmentos de video
 app.get('/segment', async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send('Falta parametro url');
@@ -138,5 +97,5 @@ app.get('/segment', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Proxy Puppeteer listo en puerto ${PORT}`);
+  console.log(`Proxy API listo en puerto ${PORT}`);
 });
